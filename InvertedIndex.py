@@ -3,29 +3,31 @@ import os
 import glob
 import nltk
 import re
-# nltk.download('all')
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
-# nltk.download(stopwords)
-from nltk.stem import PorterStemmer
+from nltk.stem import PorterStemmer, WordNetLemmatizer
 from collections import defaultdict
+import csv
+import json
+from operator import itemgetter
+
+nltk.download('stopwords')
+nltk.download('punkt')
+nltk.download('wordnet')
 
 stop_words = set(stopwords.words('english'))
 stemmer = PorterStemmer()
+wordnet_lemmatizer = WordNetLemmatizer()
 
-path = os.getcwd() + '/data/'
-
-files = os.listdir(path)
+data_path = os.getcwd()
 
 
 def readfile(path, filename):
 	'''
 	Reads file given in parameter name "filename".
-
 	Parameters:
-		path (str) : Path where file is present
-		filename : File to be read
-
+	path (str) : Path where file is present
+	filename : File to be read
 	Returns read file in string type
 	'''
 	with open(path + filename) as file:
@@ -36,96 +38,116 @@ def readfile(path, filename):
 
 def preprocess(text):
 	'''
-	Preprocesses text.
-
+	Convert text file into normalized tokens
 	Parameters:
-		text (str) : text to preprocessed
-	
+	    text (str) : text to be preprocessed
+
 	Returns:
-		stemmed (str) : Preprocessed text
+	    stemmed (str) : Preprocessed text
 	'''
 	stemmed = []
 	text = text.lower()
-	text = re.sub(r'\d+', '', text)
-	text = re.sub(r'[^\w\s]','',text)
-	tokens = word_tokenize(text)
-	text_list = [i for i in tokens if not i in stop_words]
+	text = re.sub(r'\b[0-9]+\b', '', text) # Removes terms containing only numbers
+	tokens = word_tokenize(text) #divides string into lists of substrings
+	text_list = [i for i in tokens if not i in stop_words] # Removing stopwords
 	for word in text_list:
-		stemmed_word = (stemmer.stem(word))
-		stemmed.append(stemmed_word)	
+		word = re.sub(r'[^\w\s]','',word) #Removes punctuation characters (except underscore)
+		word = re.sub(r'\_','',word)
+		stemmed_word = wordnet_lemmatizer.lemmatize(word)
+		stemmed_word = (stemmer.stem(stemmed_word)) #It takes out the root of the word
+		stemmed.append(stemmed_word)
 	return stemmed
 
 
-def inverted_index(text,docID):
+def create_index(terms, docID):
 	'''
-	Creates Inverted Index in Data structure called dictionary. Term is index and list of lists is stored as values. Each list item in list is combination of docID and frequency of term in docID.
-
+	Creates Inverted Index in Data structure called dictionary and then save it into a json file.
+	Term is index and list of lists is stored as values. Each list item in list is combination of docID and frequency of term in docID.
 	Parameters:
-		text (str) : text to be indexed in dictionary
-		docID (str) : Document Name
-
+	    text (str) : text to be indexed in dictionary
+	    docID (str) : Document Name
 	'''
-	for term in text:
+	with open(data_path+'/dict.json', 'r') as index:
+		ivdict = json.loads(index.read())
+	for term in terms:
+		print(term)
 		if term in ivdict:
-			flag=0
-			for i in range(len(ivdict[term])):
-				if ivdict[term][i][0] == docID:
-					ivdict[term][i][1] += 1
-					flag=1
-					break;
-			if flag == 0:
-				ivdict[term].append([docID,1])			
+			postings_list = [posting[0] for posting in ivdict[term]]
+			if docID in postings_list:
+				ivdict[term][-1][1] += 1
+			else:
+				ivdict[term].append([docID,1])         
 		else:
-			myList = [[docID,1]]
-			ivdict.update({term : myList }) 
+			ivdict.update({term : [[docID,1]] })
+		print("postings list",ivdict[term])
+
+	index_file = open(data_path+"/dict.json","w")
+	index_file.write(json.dumps(ivdict))
+	index_file.close()
 	return
 
 def search(query):
 	'''
 	Returns list of documents containing the terms present in query
-	
+
 	Parameters:
-		query (str) : Query entered by user 
+	    query (str) : Query received from form input
 	Returns:
-		A list of documents containing query terms
+	    A list of documents containing query terms
 	'''
-	query = list(query.split(" "))
-	query1 = query[0]
-	query2 = query[1]
-	result = []
-	if query1 not in ivdict or query2 not in ivdict:	
-		print("No query resuts available, Please rebuild your query")
-		return
-	else:
-		i=0 
-		j=0
-		query1_list = ivdict[query1]
-		query2_list = ivdict[query2]
-		query1_list.sort()
-		query2_list.sort()
-		while i<(len(query1_list)) and j<(len(query2_list)):
-			a = query1_list[i][0]
-			b = query2_list[j][0]
-			if a == b:
-				result.append(a)
-				i+=1
-				j+=1
-			else: 
-				if a > b:
-					j+=1
-				else:
-					i+=1
-#	print("The search results for AND Boolean query:::",result)
-	return result
+	#query_list = list(query.split(" "))
+	## ** QUERY OPTIMIZATION **
+	query_list = query
+	postings = []
+	query_output = []
+	#Load Inverted Index
+	with open(data_path+"/dict.json","rb") as iv:
+		ivdict = json.load(iv)
+	# Sorting postings lists based on document frequency for query optimization
+	for query in query_list:
+		postings.append([ivdict[query],len(ivdict[query])])
+	postings = sorted(postings, key = itemgetter(1), reverse=False)
+	first_list = [posting[0] for posting in postings[0][0]]
+	for posting in postings:
+		second_list = [list_item[0] for list_item in posting[0]]
+		fp = 0 #pointer to first list
+		sp = 0 #pointer to second list
+		while fp<len(first_list) and sp<len(second_list):
+			if first_list[fp]==second_list[sp]:
+				if first_list[fp] not in query_output:
+					query_output.append(first_list[fp])
+				fp += 1
+				sp += 1
+			elif first_list[fp] < second_list[sp]:
+				fp += 1
+			else:
+				sp += 1
+		first_list = query_output
 
+	return query_output
 
-ivdict = {}
+path = os.getcwd() + '/document_collection/'
+files = os.listdir(path)
+docID=1
+docID_map = {} #mapping doc IDs to the filenames
 for filename in files:
+	print(filename)
 	text = readfile(path, filename)
-	text = preprocess(text) 
-	inverted_index(text, filename)
+	terms = preprocess(text)
+	create_index(terms, docID)
+	docID_map[docID] = filename
+	docID += 1
 
-#print(ivdict)
-query = input("Enter your query")
-print(search(query))	
+
+#Conjunctive query
+query = input()
+query = preprocess(query)
+
+query_output = search(query)
+
+#Retrieving file name
+for doc_item in query_output:
+	print(docID_map[doc_item])
+
+
 
